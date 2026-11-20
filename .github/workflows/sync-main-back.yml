@@ -1,0 +1,55 @@
+name: Sync main back into test branches
+
+# Keeps dev, sit and uat from drifting away from main (for example after a hotfix).
+# Opens a PR main -> <branch> when main has commits the branch does not. Merge it with a
+# merge commit. Runs after every push to main (a release landing), weekly, and by hand.
+# Needs the same PROMOTE_TOKEN secret as promote-next.yml.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 1 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [dev, sit, uat]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Open PR main to the target branch if main is ahead
+        env:
+          GH_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          ahead=$(git rev-list --count "origin/$TARGET..origin/main")
+          if [ "$ahead" -eq 0 ]; then
+            echo "$TARGET already contains everything on main."
+            exit 0
+          fi
+
+          existing=$(gh pr list --head main --base "$TARGET" --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "PR #$existing is already open."
+            exit 0
+          fi
+
+          url=$(gh pr create --base "$TARGET" --head main \
+            --title "Sync main into $TARGET" \
+            --body "Keeps \`$TARGET\` from drifting away from \`main\`. Merge with a merge commit, not squash.")
+          echo "Opened $url"
+          gh pr merge "$url" --auto --merge || true

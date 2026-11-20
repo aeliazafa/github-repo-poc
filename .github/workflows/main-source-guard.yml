@@ -1,0 +1,29 @@
+name: Main source guard
+
+# main must only receive release branches, and release.yml opens that PR after prod
+# succeeded. This blocks any other branch from being merged into main by hand.
+# The job name "source" is what the main ruleset marks as a required status check.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only release branches may be merged into main
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          case "$HEAD_REF" in
+            release/*) echo "OK: $HEAD_REF" ;;
+            *)
+              echo "::error::PRs into main must come from a release/* branch whose version is already deployed to prod (got $HEAD_REF)."
+              exit 1
+              ;;
+          esac

@@ -1,0 +1,33 @@
+name: PR checklist
+
+# Blocks promotion PRs (into uat and release/*) until every checklist box in the PR
+# description is ticked. Ticking a box edits the description, which re-runs this check.
+# The job name "checklist" is what the uat and release/** ruleset marks as required.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [uat, 'release/**']
+
+permissions:
+  contents: read
+
+jobs:
+  checklist:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every checklist box to be ticked
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          total=$(printf '%s\n' "$BODY" | grep -cE '^\s*- \[( |x|X)\]' || true)
+          open=$(printf '%s\n' "$BODY" | grep -cE '^\s*- \[ \]' || true)
+          if [ "$total" -eq 0 ]; then
+            echo "::error::No checklist found in the PR description."
+            exit 1
+          fi
+          if [ "$open" -gt 0 ]; then
+            echo "::error::$open of $total checklist items are not ticked yet."
+            exit 1
+          fi
+          echo "All $total checklist items are ticked."

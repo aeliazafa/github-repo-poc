@@ -1,0 +1,29 @@
+name: Deploy branch (Jenkins mock)
+
+# PoC stand-in for the existing Jenkins behaviour: a push to dev, sit or uat is deployed.
+# In the real setup Jenkins reacts to the same push through a webhook and this file is not
+# needed. Using "environment" here makes GitHub show a deployment history per environment,
+# which is useful for the demo.
+
+on:
+  push:
+    branches: [dev, sit, uat]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mock Jenkins deployment
+        run: |
+          echo "Jenkins would deploy branch '${GITHUB_REF_NAME}' at commit ${GITHUB_SHA}"
+          echo "Target environment: ${GITHUB_REF_NAME}"
+          # Real call, only possible from a self-hosted runner that can reach Jenkins:
+          # curl -fsS -X POST --user "$JENKINS_USER:$JENKINS_TOKEN" \
+          #   "$JENKINS_URL/job/deploy-app/buildWithParameters" \
+          #   --data-urlencode "ENV=${GITHUB_REF_NAME}" --data-urlencode "GIT_SHA=${GITHUB_SHA}"

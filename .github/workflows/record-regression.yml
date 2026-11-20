@@ -1,0 +1,74 @@
+name: Record regression result
+
+# The final (prod) tag needs a commit status named "regression" = success on the tip of the
+# release branch (see release.yml). It can come from two places:
+#   1. Jenkins, after it runs the automation suite against alpha (posts the same status).
+#   2. QA, by running this workflow after manual regression. Evidence link is mandatory.
+# The job uses the "qa-signoff" environment, whose required reviewers are the QA team, so a
+# result cannot be recorded by the person who asked for it (turn on "Prevent self-review").
+# The status belongs to one commit: if the release branch gets a new commit, test again.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_branch:
+        description: 'Release branch, for example release/A'
+        required: true
+        type: string
+      result:
+        description: 'Regression outcome'
+        required: true
+        type: choice
+        options:
+          - success
+          - failure
+      mode:
+        description: 'How it was tested'
+        required: true
+        type: choice
+        options:
+          - automated
+          - manual
+          - both
+      evidence:
+        description: 'Link to the test report or evidence (https://...)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    environment: qa-signoff
+    steps:
+      - name: Post the regression status on the release branch tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ inputs.release_branch }}
+          RESULT: ${{ inputs.result }}
+          MODE: ${{ inputs.mode }}
+          EVIDENCE: ${{ inputs.evidence }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+
+          case "$BRANCH" in
+            release/*) ;;
+            *) echo "::error::Only release/* branches can be signed off (got $BRANCH)."; exit 1 ;;
+          esac
+          case "$EVIDENCE" in
+            https://*) ;;
+            *) echo "::error::Evidence must be an https:// link."; exit 1 ;;
+          esac
+
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" --jq .object.sha)
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$sha" \
+            -f state="$RESULT" \
+            -f context="regression" \
+            -f description="Regression ($MODE) recorded by $ACTOR" \
+            -f target_url="$EVIDENCE" > /dev/null
+
+          echo "Recorded regression=$RESULT on $BRANCH at $sha" | tee -a "$GITHUB_STEP_SUMMARY"

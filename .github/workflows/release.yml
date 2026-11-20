@@ -1,0 +1,172 @@
+name: Release (tag to alpha or prod)
+
+# A tag must be the tip of a release/* branch (main + one feature).
+#   vX.Y.Z-rc.N  -> alpha  (pre-production, regression testing happens here)
+#   vX.Y.Z       -> prod   Needs BOTH:
+#                           - an -rc tag on the same commit, and
+#                           - a commit status "regression" = success on that commit
+#                             (posted by Jenkins or by record-regression.yml)
+#                          OR an annotated tag whose message has a line starting with
+#                          "SKIP-REGRESSION:" and a reason (recorded waiver).
+# After prod succeeds, a PR release/<x> -> main is opened. main therefore only ever contains
+# what has already been deployed to prod.
+#
+# Create a release candidate:
+#   git checkout release/A && git pull
+#   git tag -a v1.0.0-rc.1 -m "Release candidate 1" && git push origin v1.0.0-rc.1
+# Final tag, regression recorded:  git tag -a v1.0.0 -m "Release 1.0.0"
+# Final tag, regression skipped:   git tag -a v1.0.1 -m "SKIP-REGRESSION: urgent fix, approved by QA lead"
+#
+# Needs the repository secret PROMOTE_TOKEN (see promote-next.yml) for the PR into main.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: read
+    outputs:
+      target: ${{ steps.decide.outputs.target }}
+      prerelease: ${{ steps.decide.outputs.prerelease }}
+      waived: ${{ steps.decide.outputs.waived }}
+      release_branch: ${{ steps.branch.outputs.release_branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Refresh tags (keeps annotated tag messages)
+        run: git fetch --force --tags origin
+
+      - name: The tag must be the tip of a release branch
+        id: branch
+        run: |
+          branch=$(git for-each-ref --points-at "$GITHUB_SHA" \
+            --format='%(refname:short)' refs/remotes/origin/release | head -n 1)
+          if [ -z "$branch" ]; then
+            echo "::error::$GITHUB_REF_NAME is not the tip of a release/* branch. Tag the latest commit of the release branch."
+            exit 1
+          fi
+          echo "release_branch=${branch#origin/}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide the target environment
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-rc.* ]]; then
+            {
+              echo "target=alpha"
+              echo "prerelease=true"
+              echo "waived=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "target=prod"
+            echo "prerelease=false"
+          } >> "$GITHUB_OUTPUT"
+
+          if git tag --points-at "$GITHUB_SHA" | grep -q -- '-rc\.'; then
+            state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" \
+              --jq '[.statuses[] | select(.context == "regression")][0].state // "missing"')
+            if [ "$state" != "success" ]; then
+              echo "::error::The regression status on this commit is '$state'. Alpha regression must pass and be recorded (Jenkins or the Record regression result workflow) before the final tag, or use a SKIP-REGRESSION tag."
+              exit 1
+            fi
+            echo "waived=false" >> "$GITHUB_OUTPUT"
+          elif git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | grep -q '^SKIP-REGRESSION:'; then
+            reason=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | grep -m1 '^SKIP-REGRESSION:')
+            echo "waived=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Regression testing was skipped. $reason"
+            {
+              echo "### Regression testing skipped"
+              echo
+              echo "$reason"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::No release candidate tag (vX.Y.Z-rc.N) on this commit. Deploy it to alpha first, or create an annotated tag with a SKIP-REGRESSION: reason line."
+            exit 1
+          fi
+
+  release:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the GitHub Release with generated notes (skip if it already exists)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists (created from the GitHub UI)."
+            exit 0
+          fi
+          args=()
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag "${args[@]}"
+
+  deploy:
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.prepare.outputs.target }}
+    steps:
+      - name: Mock Jenkins deployment
+        env:
+          TARGET: ${{ needs.prepare.outputs.target }}
+          WAIVED: ${{ needs.prepare.outputs.waived }}
+        run: |
+          echo "Jenkins would deploy tag '${GITHUB_REF_NAME}' (${GITHUB_SHA}) to ${TARGET}"
+          if [ "$WAIVED" = "true" ]; then
+            echo "NOTE: regression testing was skipped for this release."
+          fi
+          # Real call, only possible from a self-hosted runner that can reach Jenkins:
+          # curl -fsS -X POST --user "$JENKINS_USER:$JENKINS_TOKEN" \
+          #   "$JENKINS_URL/job/deploy-app/buildWithParameters" \
+          #   --data-urlencode "ENV=${TARGET}" --data-urlencode "GIT_TAG=${GITHUB_REF_NAME}"
+
+  open-main-pr:
+    # Runs only after a successful prod deployment. The PR is NOT auto-merged: the release
+    # owner approves it once prod is stable with no rollback. If prod is rolled back, close it.
+    needs: [prepare, deploy]
+    if: needs.prepare.outputs.target == 'prod'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open the PR from the release branch into main
+        env:
+          GH_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_BRANCH: ${{ needs.prepare.outputs.release_branch }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          existing=$(gh pr list --head "$RELEASE_BRANCH" --base main --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "PR #$existing already open."
+            exit 0
+          fi
+          {
+            echo "Prod is running \`$VERSION\` from \`$RELEASE_BRANCH\`."
+            echo
+            echo "Approve and merge only when prod is stable and has **not** been rolled back."
+            echo "If prod was rolled back, close this PR and fix the release branch instead."
+          } > body.md
+          gh pr create --base main --head "$RELEASE_BRANCH" \
+            --title "Release $VERSION to main (prod deployed)" --body-file body.md
