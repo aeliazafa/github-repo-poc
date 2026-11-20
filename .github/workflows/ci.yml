@@ -1,0 +1,21 @@
+name: CI
+
+# Runs on every PR into an environment branch and on every push to one.
+# The job name "test" is what the rulesets mark as a required status check.
+
+on:
+  pull_request:
+    branches: [dev, sit, uat, main, 'release/**']
+  push:
+    branches: [dev, sit, uat, main, 'release/**']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run checks
+        run: bash tests/check.sh
