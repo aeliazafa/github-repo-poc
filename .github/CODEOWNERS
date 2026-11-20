@@ -1,0 +1,8 @@
+# QA owns every promotion. The uat and main rulesets require a review from a code owner,
+# so a member of the QA team must approve before those PRs can merge.
+# Replace YOUR-ORG and qa-team with your organization and team slug.
+# The team needs at least Write permission on the repository for this to count.
+*  @YOUR-ORG/qa-team
+
+# Fallback if teams are not available: list people instead.
+# *  @qa-user-1 @qa-user-2

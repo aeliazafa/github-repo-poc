@@ -1,0 +1,79 @@
+name: Promote feature to next step
+
+# dev -> sit -> uat: open the next PR for the SAME feature branch and turn on auto-merge.
+# uat -> release: cut release/<feature> from main and open feature/<x> -> release/<x>.
+#
+# Alpha and prod are built from that release branch (main + this one feature), never from
+# sit or uat, so features B and C that sit in those branches can never reach production by
+# accident. main is NOT touched here: it changes only after prod succeeded (see release.yml).
+#
+# Needs a repository secret PROMOTE_TOKEN (fine-grained token or GitHub App token with
+# Contents and Pull requests read/write). The built-in GITHUB_TOKEN is not enough:
+# PRs it opens do not trigger CI, so the required checks would never report.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [dev, sit, uat]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  promote:
+    if: >-
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'feature/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Open the next PR and enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
+          FEATURE: ${{ github.event.pull_request.head.ref }}
+          FROM_ENV: ${{ github.event.pull_request.base.ref }}
+          FROM_PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          NAME="${FEATURE#feature/}"
+          case "$FROM_ENV" in
+            dev) NEXT=sit ;;
+            sit) NEXT=uat ;;
+            uat) NEXT="release/$NAME" ;;
+            *) echo "Nothing to promote from $FROM_ENV"; exit 0 ;;
+          esac
+
+          # After uat the code goes into a release branch cut from main (created once).
+          if [ "$FROM_ENV" = "uat" ]; then
+            if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$NEXT" > /dev/null 2>&1; then
+              sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+              gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+                -f ref="refs/heads/$NEXT" -f sha="$sha" > /dev/null
+              echo "Created $NEXT from main at $sha"
+            fi
+          fi
+
+          existing=$(gh pr list --head "$FEATURE" --base "$NEXT" --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "PR #$existing already open for $FEATURE -> $NEXT"
+            exit 0
+          fi
+
+          {
+            echo "Promoting \`$FEATURE\` from \`$FROM_ENV\` to \`$NEXT\` (previous PR: #$FROM_PR)."
+            echo
+            cat .github/promotion-checklist.md
+          } > body.md
+
+          url=$(gh pr create --base "$NEXT" --head "$FEATURE" \
+            --title "Promote $FEATURE to $NEXT" --body-file body.md)
+          echo "Opened $url"
+
+          gh pr merge "$url" --auto --merge \
+            || echo "::warning::Could not enable auto-merge. Turn on 'Allow auto-merge' in the repository settings."
