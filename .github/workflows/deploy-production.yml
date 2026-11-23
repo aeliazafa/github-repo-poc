@@ -1,0 +1,30 @@
+name: Deploy to Production
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-production:
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Validate release tag
+        run: |
+          echo "Deploying release tag: ${{ github.ref_name }}"
+          test -n "${{ github.ref_name }}"
+
+      - name: Simulate production deployment
+        run: |
+          echo "POC: deploy immutable artifact for ${{ github.ref_name }} to production"
+          echo "Add real deployment command here"

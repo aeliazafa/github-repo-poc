@@ -1,21 +1,35 @@
 name: CI
 
-# Runs on every PR into an environment branch and on every push to one.
-# The job name "test" is what the rulesets mark as a required status check.
-
 on:
   pull_request:
-    branches: [dev, sit, uat, main, 'release/**']
+    branches:
+      - main
   push:
-    branches: [dev, sit, uat, main, 'release/**']
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  build-and-test:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Run checks
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Run tests
         run: bash tests/check.sh
+
+      - name: Build artifact
+        run: |
+          mkdir -p dist
+          tar -czf dist/app-${{ github.sha }}.tar.gz app/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ github.sha }}
+          path: dist/
+          retention-days: 7
