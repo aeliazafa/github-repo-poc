@@ -19,24 +19,13 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
       - name: Run tests
-        run: pytest -v
+        run: bash tests/check.sh
 
       - name: Build artifact
         run: |
           mkdir -p dist
-          tar -czf dist/app-${{ github.sha }}.tar.gz app requirements.txt test_app.py
+          tar -czf dist/app-${{ github.sha }}.tar.gz app/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
